@@ -20,6 +20,7 @@ flags: Flags = .{},
 pub const Error = error{
     InvalidFormat,
     InvalidAction,
+    InvalidUnion,
 };
 
 /// Flags the full binding-scoped flags that can be set per binding.
@@ -268,6 +269,7 @@ pub const Action = union(enum) {
     ///   - "open": Open the file in the default OS editor for text files.
     ///     The default OS editor is determined by using `open` on macOS
     ///     and `xdg-open` on Linux.
+    ///   - "pipe": Pipe the scrollback contents to a given command.
     ///
     write_scrollback_file: WriteScreenAction,
 
@@ -496,9 +498,10 @@ pub const Action = union(enum) {
         u16,
     };
 
-    pub const WriteScreenAction = enum {
+    pub const WriteScreenAction = union(enum) {
         paste,
         open,
+        pipe: []const u8,
     };
 
     // Extern because it is used in the embedded runtime ABI.
@@ -526,6 +529,7 @@ pub const Action = union(enum) {
     ) !field.type {
         return switch (@typeInfo(field.type)) {
             .Enum => try parseEnum(field.type, param),
+            .Union => try parseUnion(field.type, ";", param),
             .Int => try parseInt(field.type, param),
             .Float => try parseFloat(field.type, param),
             .Struct => |info| blk: {
@@ -553,6 +557,48 @@ pub const Action = union(enum) {
 
             else => unreachable,
         };
+    }
+
+    pub fn parseUnion(comptime T: type, comptime splitBy: []const u8, input: []const u8) !T {
+        // Split our action by colon. A colon may not exist for some
+        // actions so it is optional. The part preceding the colon is the
+        // action name.
+        const sepIdx = std.mem.indexOf(u8, input, splitBy);
+        const fieldName = input[0..(sepIdx orelse input.len)];
+
+        // A key name is always required
+        if (fieldName.len == 0) return Error.InvalidFormat;
+
+        const actionInfo = @typeInfo(T).Union;
+        inline for (actionInfo.fields) |field| {
+            if (std.mem.eql(u8, fieldName, field.name)) {
+                // If the field type is void we expect no value
+                switch (field.type) {
+                    void => {
+                        if (sepIdx != null) return Error.InvalidFormat;
+                        return @unionInit(T, field.name, {});
+                    },
+
+                    []const u8 => {
+                        const idx = sepIdx orelse return Error.InvalidFormat;
+                        const param = input[idx + 1 ..];
+                        return @unionInit(T, field.name, param);
+                    },
+
+                    else => {
+                        const idx = sepIdx orelse return Error.InvalidFormat;
+                        const param = input[idx + 1 ..];
+                        return @unionInit(
+                            T,
+                            field.name,
+                            try parseParameter(field, param),
+                        );
+                    },
+                }
+            }
+        }
+
+        return Error.InvalidUnion;
     }
 
     /// Parse an action in the format of "key=value" where key is the
@@ -789,6 +835,18 @@ pub const Action = union(enum) {
                         if (i + 1 < info.fields.len) try writer.writeAll(",");
                     }
                 },
+                .Union => |info| {
+                    const tagName = @tagName(value);
+                    try writer.print("{s}", .{tagName});
+                    inline for (info.fields) |field| {
+                        if (std.mem.eql(u8, field.name, tagName)) {
+                            if (@typeInfo(field.type) != .Void) {
+                                try writer.writeAll(";");
+                                try formatValue(writer, @field(value, field.name));
+                            }
+                        }
+                    }
+                },
                 else => @compileError("unhandled type: " ++ @typeName(Value)),
             },
         }
@@ -816,6 +874,7 @@ pub const Action = union(enum) {
             .Int,
             .Float,
             .Enum,
+            .Union,
             => value,
 
             .Pointer => |info| slice: {

@@ -20,6 +20,7 @@ const builtin = @import("builtin");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
+const posix = std.posix;
 const global_state = &@import("global.zig").state;
 const oni = @import("oniguruma");
 const crash = @import("crash/main.zig");
@@ -3827,6 +3828,7 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
                 );
                 return true;
             };
+            log.warn("HERE --- processing text {any}", .{text});
             self.io.queueMessage(try termio.Message.writeReq(
                 self.alloc,
                 text,
@@ -4322,6 +4324,10 @@ fn writeScreenFile(
             self.alloc,
             path,
         ), .unlocked),
+        .pipe => |cmd| {
+            std.log.warn("stubbed out pipe for {any}", .{cmd});
+            try internal_os.open(self.alloc, .text, path);
+        },
     }
 }
 
